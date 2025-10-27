@@ -1,0 +1,19 @@
+# Unreal generated
+Binaries/
+DerivedDataCache/
+Intermediate/
+Saved/
+.vscode/
+.vs/
+*.opensdf
+*.sdf
+*.suo
+*.xcodeproj
+*.xcworkspace
+*.user
+# Visual Studio build folders
+Build/
+# Mac OS files
+.DS_Store
+# Editor backup files
+*.backup
