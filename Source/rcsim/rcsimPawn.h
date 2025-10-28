@@ -79,41 +79,57 @@ protected:
 
 public:
 
-	/** Reference to trajectory actor for GPS replay */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="GPS Replay")
+	/** Reference to trajectory actor for GNSS replay */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="GNSS Replay")
 	ATrajectoryActor* TrajectoryRef;
 
-	/** Enable GPS replay mode */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="GPS Replay")
-	bool bEnableGPSReplay = false;
+	/** Enable GNNS replay mode */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="GNSS Replay")
+	bool bEnableGNSSReplay = false;
+
+	/** Use timestamp-based playback (real-time) instead of fixed delay */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="GNSS Replay")
+	bool bUseTimestampPlayback = true;
+
+	/** Playback speed multiplier (1.0 = real-time, 2.0 = 2x speed, etc.) */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="GNSS Replay")
+	float PlaybackSpeed = 1.0f;
 
 	/** Use physics-based movement (PID controller) instead of teleportation */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="GPS Replay")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="GNSS Replay")
 	bool bUsePhysicsMovement = false;
 
 	/** PID gain for steering (yaw control) */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="GPS Replay|PID")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="GNSS Replay|PID")
 	float KpYaw = 0.02f;
 
 	/** PID gain for throttle (position control) */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="GPS Replay|PID")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="GNSS Replay|PID")
 	float KpPosition = 0.01f;
 
 	/** Distance threshold to consider a point reached (cm) */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="GPS Replay|PID")
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="GNSS Replay|PID")
 	float AcceptRadius = 500.0f;
 
 	/** Current trajectory point index */
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="GPS Replay")
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="GNSS Replay")
 	int32 CurrentTrajectoryIndex = 0;
 
-	/** Time to wait between trajectory points (seconds) - only for teleport mode */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="GPS Replay")
+	/** Elapsed simulation time for timestamp-based playback */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="GNSS Replay")
+	float CurrentSimTime = 0.0f;
+
+	/** Time to wait between trajectory points (seconds) - only for non-timestamp mode */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="GNSS Replay")
 	float TrajectoryPointDelay = 0.1f;
+
+	/** Reset GNSS replay to start */
+	UFUNCTION(BlueprintCallable, Category="GNSS Replay")
+	void ResetGNSSReplay();
 
 private:
 
-	/** Timer for trajectory playback */
+	/** Timer for trajectory playback (non-timestamp mode) */
 	float TrajectoryTimer = 0.0f;
 
 public:

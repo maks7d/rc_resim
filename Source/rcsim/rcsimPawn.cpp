@@ -59,7 +59,7 @@ void ArcsimPawn::BeginPlay()
 	Super::BeginPlay();
 	
 	// Auto-find TrajectoryActor if not manually assigned
-	if (!TrajectoryRef && bEnableGPSReplay)
+	if (!TrajectoryRef && bEnableGNSSReplay)
 	{
 		TArray<AActor*> FoundActors;
 		UGameplayStatics::GetAllActorsOfClass(GetWorld(), ATrajectoryActor::StaticClass(), FoundActors);
@@ -67,12 +67,18 @@ void ArcsimPawn::BeginPlay()
 		if (FoundActors.Num() > 0)
 		{
 			TrajectoryRef = Cast<ATrajectoryActor>(FoundActors[0]);
-			UE_LOG(LogTemp, Warning, TEXT("GPS Replay: Auto-found TrajectoryActor: %s"), *TrajectoryRef->GetName());
+			UE_LOG(LogTemp, Warning, TEXT("GNSS Replay: Auto-found TrajectoryActor: %s"), *TrajectoryRef->GetName());
 		}
 		else
 		{
-			UE_LOG(LogTemp, Error, TEXT("GPS Replay: Enabled but no TrajectoryActor found in level!"));
+			UE_LOG(LogTemp, Error, TEXT("GNSS Replay: Enabled but no TrajectoryActor found in level!"));
 		}
+	}
+
+	// Initialize GNSS replay
+	if (bEnableGNSSReplay && TrajectoryRef)
+	{
+		ResetGNSSReplay();
 	}
 }
 
@@ -118,10 +124,56 @@ void ArcsimPawn::Tick(float Delta)
 {
 	Super::Tick(Delta);
 
-	// GPS Replay Mode
-	if (bEnableGPSReplay && TrajectoryRef && TrajectoryRef->Positions.Num() > 0)
+	// GNSS Replay Mode
+	if (bEnableGNSSReplay && TrajectoryRef && TrajectoryRef->Positions.Num() > 0)
 	{
-		if (bUsePhysicsMovement)
+		if (bUseTimestampPlayback && TrajectoryRef->Timestamps.Num() > 0)
+		{
+			// ===== TIMESTAMP-BASED REAL-TIME PLAYBACK =====
+			CurrentSimTime += Delta * PlaybackSpeed;
+			
+			// Get trajectory start time
+			double StartTime = TrajectoryRef->Timestamps[0];
+			double CurrentTrajectoryTime = StartTime + CurrentSimTime;
+			
+			// Find the current segment based on timestamp
+			bool bFoundSegment = false;
+			for (int32 i = 0; i < TrajectoryRef->Timestamps.Num() - 1; ++i)
+			{
+				if (TrajectoryRef->Timestamps[i] <= CurrentTrajectoryTime && 
+					TrajectoryRef->Timestamps[i + 1] > CurrentTrajectoryTime)
+				{
+					// Interpolate between points based on timestamp
+					double t0 = TrajectoryRef->Timestamps[i];
+					double t1 = TrajectoryRef->Timestamps[i + 1];
+					float Alpha = (CurrentTrajectoryTime - t0) / (t1 - t0);
+					
+					FVector TargetPos = FMath::Lerp(TrajectoryRef->Positions[i], TrajectoryRef->Positions[i + 1], Alpha);
+					FRotator TargetRot = FMath::Lerp(TrajectoryRef->Rotations[i], TrajectoryRef->Rotations[i + 1], Alpha);
+					
+					// Teleport with physics reset
+					SetActorLocationAndRotation(TargetPos, TargetRot, false, nullptr, ETeleportType::TeleportPhysics);
+					
+					if (GetMesh())
+					{
+						GetMesh()->SetPhysicsLinearVelocity(FVector::ZeroVector);
+						GetMesh()->SetPhysicsAngularVelocityInDegrees(FVector::ZeroVector);
+					}
+					
+					CurrentTrajectoryIndex = i;
+					bFoundSegment = true;
+					break;
+				}
+			}
+			
+			// If we've passed the last timestamp, loop back
+			if (!bFoundSegment && CurrentTrajectoryTime >= TrajectoryRef->Timestamps.Last())
+			{
+				UE_LOG(LogTemp, Warning, TEXT("GNSS Replay: Finished trajectory (%.2fs), looping back to start"), CurrentSimTime);
+				ResetGNSSReplay();
+			}
+		}
+		else if (bUsePhysicsMovement)
 		{
 			// ===== PHYSICS-BASED MOVEMENT (PID Controller) =====
 			// Clamp index
@@ -138,13 +190,13 @@ void ArcsimPawn::Tick(float Delta)
 				if (CurrentTrajectoryIndex < TrajectoryRef->Positions.Num() - 1)
 				{
 					CurrentTrajectoryIndex++;
-					UE_LOG(LogTemp, Log, TEXT("GPS Replay: Reached waypoint, moving to point %d/%d"), 
+					UE_LOG(LogTemp, Log, TEXT("GNSS Replay: Reached waypoint, moving to point %d/%d"), 
 						CurrentTrajectoryIndex + 1, TrajectoryRef->Positions.Num());
 				}
 				else
 				{
 					// Loop back to start
-					UE_LOG(LogTemp, Warning, TEXT("GPS Replay: Finished trajectory, looping back"));
+					UE_LOG(LogTemp, Warning, TEXT("GNSS Replay: Finished trajectory, looping back"));
 					CurrentTrajectoryIndex = 0;
 				}
 			}
@@ -165,7 +217,7 @@ void ArcsimPawn::Tick(float Delta)
 		}
 		else
 		{
-			// ===== TELEPORTATION MODE =====
+			// ===== FIXED DELAY TELEPORTATION MODE =====
 			TrajectoryTimer += Delta;
 			
 			if (TrajectoryTimer >= TrajectoryPointDelay)
@@ -174,7 +226,7 @@ void ArcsimPawn::Tick(float Delta)
 				
 				if (CurrentTrajectoryIndex < TrajectoryRef->Positions.Num())
 				{
-					// Teleport to next GPS point with proper physics handling
+					// Teleport to next GNSS point with proper physics handling
 					FVector TargetPos = TrajectoryRef->Positions[CurrentTrajectoryIndex];
 					FRotator TargetRot = TrajectoryRef->Rotations[CurrentTrajectoryIndex];
 					
@@ -188,15 +240,15 @@ void ArcsimPawn::Tick(float Delta)
 						GetMesh()->SetPhysicsAngularVelocityInDegrees(FVector::ZeroVector);
 					}
 					
-					UE_LOG(LogTemp, Log, TEXT("GPS Replay: Teleporting to point %d/%d"), 
+					UE_LOG(LogTemp, Log, TEXT("GNSS Replay: Teleporting to point %d/%d"), 
 						CurrentTrajectoryIndex + 1, TrajectoryRef->Positions.Num());
 					
 					CurrentTrajectoryIndex++;
 				}
 				else
 				{
-					UE_LOG(LogTemp, Warning, TEXT("GPS Replay: Finished trajectory, looping back to start"));
-					CurrentTrajectoryIndex = 0;
+					UE_LOG(LogTemp, Warning, TEXT("GNSS Replay: Finished trajectory, looping back to start"));
+					ResetGNSSReplay();
 				}
 			}
 		}
@@ -360,6 +412,33 @@ void ArcsimPawn::DoResetVehicle()
 
 	GetMesh()->SetPhysicsAngularVelocityInDegrees(FVector::ZeroVector);
 	GetMesh()->SetPhysicsLinearVelocity(FVector::ZeroVector);
+}
+
+void ArcsimPawn::ResetGNSSReplay()
+{
+	CurrentTrajectoryIndex = 0;
+	CurrentSimTime = 0.0f;
+	TrajectoryTimer = 0.0f;
+	
+	if (TrajectoryRef && TrajectoryRef->Positions.Num() > 0)
+	{
+		// Teleport to first GNSS point
+		SetActorLocationAndRotation(
+			TrajectoryRef->Positions[0], 
+			TrajectoryRef->Rotations[0], 
+			false, 
+			nullptr, 
+			ETeleportType::TeleportPhysics
+		);
+		
+		if (GetMesh())
+		{
+			GetMesh()->SetPhysicsLinearVelocity(FVector::ZeroVector);
+			GetMesh()->SetPhysicsAngularVelocityInDegrees(FVector::ZeroVector);
+		}
+		
+		UE_LOG(LogTemp, Warning, TEXT("GNSS Replay: Reset to start position"));
+	}
 }
 
 #undef LOCTEXT_NAMESPACE

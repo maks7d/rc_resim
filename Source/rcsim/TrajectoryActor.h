@@ -30,10 +30,38 @@ public:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Trajectory")
 	TArray<FRotator> Rotations;
 
+	// Timestamps for each GNSS point (in seconds)
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Trajectory")
+	TArray<double> Timestamps;
+
+	// Speeds for each GNSS point (m/s)
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Trajectory")
+	TArray<float> Speeds;
+
+	// Load GPS trajectory from CSV file
+	// Expected format: timestamp,lat,lon,alt,heading,speed
 	UFUNCTION(BlueprintCallable, Category = "Trajectory")
-	void LoadDummyGPS();
+	bool LoadGNSSFromCSV(const FString& FilePath);
+
+	// Clear all trajectory data
+	UFUNCTION(BlueprintCallable, Category = "Trajectory")
+	void ClearTrajectory();
+
+	// exposer dans l'éditeur
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Trajectory|Scale")
+	float LatLonScale; // multiplicateur appliqué après conversion (1.0 = scale réel)
+
+	UFUNCTION(BlueprintCallable, Category = "Trajectory|Scale")
+	void ApplyAutoScalingToFit(float TargetExtentMeters);
+
+	UFUNCTION(BlueprintCallable, Category = "Trajectory|Scale")
+	void ScaleTrajectory(float ScaleFactor);
+
+	UFUNCTION(BlueprintCallable, Category = "Trajectory|Scale")
+	void ScaleToMatchVehicleLength(AActor* VehicleActor, float DesiredVehicleLengthMeters);
 
 	// Utility: convert lat/lon/alt to Unreal space (cm)
+	// scale parameter multiplies distances in meters before conversion to cm
 	static FVector LatLonAltToUnreal(double lat, double lon, double alt,
-		double originLat, double originLon, double originAlt);
+		double originLat, double originLon, double originAlt, double Scale = 1.0);
 };

@@ -65,12 +65,6 @@ void ARccar::BeginPlay()
 			TrajectoryRef = Cast<ATrajectoryActor>(Found[0]);
 		}
 	}
-
-	// If trajectory exists and empty, load dummy GPS
-	if (TrajectoryRef && TrajectoryRef->Positions.Num() == 0)
-	{
-		TrajectoryRef->LoadDummyGPS();
-	}
 }
 
 void ARccar::Tick(float DeltaTime)
