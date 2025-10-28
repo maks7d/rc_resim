@@ -54,7 +54,7 @@ void ATrajectoryActor::Tick(float DeltaTime)
  const FVector& P = Positions[i];
  
  // Large spheres for Open World visualization (1 meter radius)
- DrawDebugSphere(GetWorld(), P,100.0f,16, FColor::Green, false, -1.0f,0,2.0f);
+ DrawDebugSphere(GetWorld(), P,50.0f,16, FColor::Green, false, -1.0f,0,1.0f);
  
  // Add text to identify each point
  DrawDebugString(GetWorld(), P + FVector(0,0,600.0f), 
@@ -84,26 +84,26 @@ bool ATrajectoryActor::LoadGNSSFromCSV(const FString& FilePath)
  TArray<FString> Lines;
  FileContent.ParseIntoArrayLines(Lines);
 
- if (Lines.Num() <=1)
+ if (Lines.Num() <= 1)
  {
  UE_LOG(LogTemp, Error, TEXT("TrajectoryActor: CSV file is empty or contains only header"));
  return false;
  }
 
  bool bFirstLine = true;
- double originLat =0.0, originLon =0.0, originAlt =0.0;
+ double originLat = 0.0, originLon = 0.0, originAlt = 0.0;
 
- int32 ValidPoints =0;
+ int32 ValidPoints = 0;
  for (const FString& Line : Lines)
  {
  // Skip header line
  if (bFirstLine)
  {
  bFirstLine = false;
- // Verify header format
+ // Verify header format (now expects: timestamp,lat,lon,alt,heading)
  if (!Line.Contains(TEXT("timestamp")) || !Line.Contains(TEXT("lat")) || !Line.Contains(TEXT("lon")))
  {
- UE_LOG(LogTemp, Warning, TEXT("TrajectoryActor: CSV header doesn't match expected format. Expected: timestamp,lat,lon,alt,heading,speed"));
+ UE_LOG(LogTemp, Warning, TEXT("TrajectoryActor: CSV header doesn't match expected format. Expected: timestamp,lat,lon,alt,heading"));
  }
  continue;
  }
@@ -117,18 +117,17 @@ bool ATrajectoryActor::LoadGNSSFromCSV(const FString& FilePath)
  TArray<FString> Tokens;
  Line.ParseIntoArray(Tokens, TEXT(","), true);
 
- if (Tokens.Num() >=6)
+ if (Tokens.Num() >= 5)
  {
- // Parse CSV fields
+ // Parse CSV fields (no more speed column)
  double timestamp = FCString::Atod(*Tokens[0]);
  double lat = FCString::Atod(*Tokens[1]);
  double lon = FCString::Atod(*Tokens[2]);
  double alt = FCString::Atod(*Tokens[3]);
  double heading = FCString::Atod(*Tokens[4]);
- double speed = FCString::Atod(*Tokens[5]);
 
  // Use first point as origin for coordinate conversion
- if (ValidPoints ==0)
+ if (ValidPoints == 0)
  {
  originLat = lat;
  originLon = lon;
@@ -140,37 +139,101 @@ bool ATrajectoryActor::LoadGNSSFromCSV(const FString& FilePath)
  // Convert GNSS coordinates to Unreal world coordinates
  FVector pos = LatLonAltToUnreal(lat, lon, alt, originLat, originLon, originAlt, (double)LatLonScale);
  Positions.Add(pos);
- Rotations.Add(FRotator(0.0f, heading,0.0f));
+ Rotations.Add(FRotator(0.0f, heading, 0.0f));
  Timestamps.Add(timestamp);
- Speeds.Add(speed);
 
  ValidPoints++;
  }
  else
  {
- UE_LOG(LogTemp, Warning, TEXT("TrajectoryActor: Skipping invalid line (expected6 fields, got %d): %s"), 
+ UE_LOG(LogTemp, Warning, TEXT("TrajectoryActor: Skipping invalid line (expected 5 fields, got %d): %s"), 
  Tokens.Num(), *Line);
  }
  }
 
- if (ValidPoints ==0)
+ if (ValidPoints == 0)
  {
  UE_LOG(LogTemp, Error, TEXT("TrajectoryActor: No valid GNSS points found in CSV file"));
  return false;
  }
 
+ // ===== CALCULATE SPEEDS FROM POSITIONS AND TIMESTAMPS =====
+ Speeds.SetNum(ValidPoints);
+ 
+ for (int32 i = 0; i < ValidPoints; ++i)
+ {
+ if (i == 0)
+ {
+ // First point: use speed to next point
+ if (ValidPoints > 1)
+ {
+ double dt = Timestamps[1] - Timestamps[0];
+ if (dt > 0.001)
+ {
+ float distanceCm = FVector::Dist(Positions[0], Positions[1]);
+ float distanceM = distanceCm / 100.0f;
+ float speedMS = distanceM / dt; // m/s
+ Speeds[0] = speedMS * 3.6f; // Convert to km/h
+ }
+ else
+ {
+ Speeds[0] = 0.0f;
+ }
+ }
+ else
+ {
+ Speeds[0] = 0.0f;
+ }
+ }
+ else if (i == ValidPoints - 1)
+ {
+ // Last point: use speed from previous point
+ Speeds[i] = Speeds[i - 1];
+ }
+ else
+ {
+ // Middle points: average speed between previous and next point
+ double dt = Timestamps[i + 1] - Timestamps[i - 1];
+ if (dt > 0.001)
+ {
+ float distanceCm = FVector::Dist(Positions[i - 1], Positions[i + 1]);
+ float distanceM = distanceCm / 100.0f;
+ float speedMS = distanceM / dt; // m/s
+ Speeds[i] = speedMS * 3.6f; // Convert to km/h
+ }
+ else
+ {
+ Speeds[i] = Speeds[i - 1];
+ }
+ }
+ }
+
  UE_LOG(LogTemp, Warning, TEXT("TrajectoryActor: Successfully loaded %d GNSS points"), ValidPoints);
  
- if (Timestamps.Num() >1)
+ if (Timestamps.Num() > 1)
  {
  double duration = Timestamps.Last() - Timestamps[0];
  UE_LOG(LogTemp, Warning, TEXT("TrajectoryActor: Trajectory duration: %.2f seconds"), duration);
+ 
+ // Log speed range for verification
+ float MinSpeed = Speeds[0];
+ float MaxSpeed = Speeds[0];
+ for (const float& Speed : Speeds)
+ {
+ MinSpeed = FMath::Min(MinSpeed, Speed);
+ MaxSpeed = FMath::Max(MaxSpeed, Speed);
+ }
+ UE_LOG(LogTemp, Warning, TEXT("TrajectoryActor: Calculated speeds range: %.1f - %.1f km/h"), MinSpeed, MaxSpeed);
  }
 
- // just after loading in LoadGNSSFromCSV
- for (int i =1; i < Positions.Num(); ++i) {
- float distCm = FVector::Dist(Positions[i -1], Positions[i]);
- UE_LOG(LogTemp, Warning, TEXT("Spacing %d-%d: %.1f cm (%.2f m)"), i -1, i, distCm, distCm /100.0f);
+ // Log spacing for first few points (debugging)
+ int32 NumToLog = FMath::Min(10, Positions.Num() - 1);
+ for (int i = 1; i <= NumToLog; ++i)
+ {
+ float distCm = FVector::Dist(Positions[i - 1], Positions[i]);
+ double dt = Timestamps[i] - Timestamps[i - 1];
+ UE_LOG(LogTemp, Warning, TEXT("Spacing %d-%d: %.1f cm (%.2f m) in %.3f s → %.1f km/h"), 
+ i - 1, i, distCm, distCm / 100.0f, dt, Speeds[i]);
  }
 
  return true;

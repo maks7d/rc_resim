@@ -87,41 +87,77 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="GNSS Replay")
 	bool bEnableGNSSReplay = false;
 
-	/** Use timestamp-based playback (real-time) instead of fixed delay */
+	/** Use physics-based movement with realistic vehicle dynamics (recommended) */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="GNSS Replay")
-	bool bUseTimestampPlayback = true;
+	bool bUsePhysicsMovement = true;
 
-	/** Playback speed multiplier (1.0 = real-time, 2.0 = 2x speed, etc.) */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="GNSS Replay")
-	float PlaybackSpeed = 1.0f;
+	/** PID Proportional gain for steering control */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="GNSS Replay|PID Control", meta=(EditCondition="bUsePhysicsMovement"))
+	float KpYaw = 0.5f;
 
-	/** Use physics-based movement (PID controller) instead of teleportation */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="GNSS Replay")
-	bool bUsePhysicsMovement = false;
+	/** PID Integral gain for steering control (reduces steady-state error) */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="GNSS Replay|PID Control", meta=(EditCondition="bUsePhysicsMovement"))
+	float KiYaw = 0.01f;
 
-	/** PID gain for steering (yaw control) */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="GNSS Replay|PID")
-	float KpYaw = 0.02f;
+	/** PID Derivative gain for steering control (reduces overshoot) */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="GNSS Replay|PID Control", meta=(EditCondition="bUsePhysicsMovement"))
+	float KdYaw = 0.1f;
 
-	/** PID gain for throttle (position control) */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="GNSS Replay|PID")
-	float KpPosition = 0.01f;
+	/** PID Proportional gain for throttle/brake control */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="GNSS Replay|PID Control", meta=(EditCondition="bUsePhysicsMovement"))
+	float KpSpeed = 0.1f;
 
-	/** Distance threshold to consider a point reached (cm) */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="GNSS Replay|PID")
+	/** PID Integral gain for speed control */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="GNSS Replay|PID Control", meta=(EditCondition="bUsePhysicsMovement"))
+	float KiSpeed = 0.005f;
+
+	/** PID Derivative gain for speed control */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="GNSS Replay|PID Control", meta=(EditCondition="bUsePhysicsMovement"))
+	float KdSpeed = 0.05f;
+
+	/** Distance threshold to consider a waypoint reached (cm) */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="GNSS Replay|PID Control", meta=(EditCondition="bUsePhysicsMovement"))
 	float AcceptRadius = 500.0f;
 
+	/** Look-ahead distance for path following (cm) - helps with smoother turns */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="GNSS Replay|PID Control", meta=(EditCondition="bUsePhysicsMovement"))
+	float LookAheadDistance = 1000.0f;
+
+	/** Maximum steering angle adjustment per frame (prevents jerky movements) */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="GNSS Replay|PID Control", meta=(EditCondition="bUsePhysicsMovement"))
+	float MaxSteeringRate = 2.0f;
+
+	/** Use timestamp-based playback (deprecated - use physics mode instead) */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="GNSS Replay|Legacy", meta=(EditCondition="!bUsePhysicsMovement"))
+	bool bUseTimestampPlayback = false;
+
+	/** Playback speed multiplier (deprecated - use physics mode) */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="GNSS Replay|Legacy", meta=(EditCondition="!bUsePhysicsMovement"))
+	float PlaybackSpeed = 1.0f;
+
+	/** Time to wait between trajectory points (deprecated) */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="GNSS Replay|Legacy", meta=(EditCondition="!bUsePhysicsMovement"))
+	float TrajectoryPointDelay = 0.1f;
+
 	/** Current trajectory point index */
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="GNSS Replay")
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="GNSS Replay|Status")
 	int32 CurrentTrajectoryIndex = 0;
 
-	/** Elapsed simulation time for timestamp-based playback */
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="GNSS Replay")
-	float CurrentSimTime = 0.0f;
+	/** Target waypoint index (may be ahead for look-ahead control) */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="GNSS Replay|Status")
+	int32 TargetWaypointIndex = 0;
 
-	/** Time to wait between trajectory points (seconds) - only for non-timestamp mode */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="GNSS Replay")
-	float TrajectoryPointDelay = 0.1f;
+	/** Current vehicle speed in km/h */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="GNSS Replay|Status")
+	float CurrentSpeed = 0.0f;
+
+	/** Target speed from GNSS data in km/h */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="GNSS Replay|Status")
+	float TargetSpeed = 0.0f;
+
+	/** Elapsed simulation time for timestamp-based playback */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="GNSS Replay|Status")
+	float CurrentSimTime = 0.0f;
 
 	/** Reset GNSS replay to start */
 	UFUNCTION(BlueprintCallable, Category="GNSS Replay")
@@ -129,8 +165,23 @@ public:
 
 private:
 
-	/** Timer for trajectory playback (non-timestamp mode) */
+	/** Timer for trajectory playback (legacy mode) */
 	float TrajectoryTimer = 0.0f;
+
+	/** PID controller state - accumulated error for integral term (yaw) */
+	float IntegralErrorYaw = 0.0f;
+
+	/** PID controller state - previous error for derivative term (yaw) */
+	float PreviousErrorYaw = 0.0f;
+
+	/** PID controller state - accumulated error for integral term (speed) */
+	float IntegralErrorSpeed = 0.0f;
+
+	/** PID controller state - previous error for derivative term (speed) */
+	float PreviousErrorSpeed = 0.0f;
+
+	/** Smooth steering input value to prevent sudden changes */
+	float SmoothedSteeringInput = 0.0f;
 
 public:
 	ArcsimPawn();

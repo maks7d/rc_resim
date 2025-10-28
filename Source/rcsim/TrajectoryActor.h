@@ -34,12 +34,12 @@ public:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Trajectory")
 	TArray<double> Timestamps;
 
-	// Speeds for each GNSS point (m/s)
+	// Calculated speeds for each GNSS point (km/h) - computed from positions and timestamps
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Trajectory")
 	TArray<float> Speeds;
 
 	// Load GPS trajectory from CSV file
-	// Expected format: timestamp,lat,lon,alt,heading,speed
+	// Expected format: timestamp,lat,lon,alt,heading
 	UFUNCTION(BlueprintCallable, Category = "Trajectory")
 	bool LoadGNSSFromCSV(const FString& FilePath);
 

@@ -127,23 +127,169 @@ void ArcsimPawn::Tick(float Delta)
 	// GNSS Replay Mode
 	if (bEnableGNSSReplay && TrajectoryRef && TrajectoryRef->Positions.Num() > 0)
 	{
-		if (bUseTimestampPlayback && TrajectoryRef->Timestamps.Num() > 0)
+		if (bUsePhysicsMovement)
 		{
-			// ===== TIMESTAMP-BASED REAL-TIME PLAYBACK =====
+			// ===== PHYSICS-BASED MOVEMENT WITH FULL PID CONTROL =====
+			// This uses the real Chaos vehicle physics with suspensions, collisions, etc.
+			
+			// Get current vehicle state
+			FVector CurrentPos = GetActorLocation();
+			FRotator CurrentRot = GetActorRotation();
+			FVector CurrentVelocity = GetMesh() ? GetMesh()->GetPhysicsLinearVelocity() : FVector::ZeroVector;
+			CurrentSpeed = CurrentVelocity.Size() * 0.036f; // Convert cm/s to km/h
+			
+			// Clamp current waypoint index
+			CurrentTrajectoryIndex = FMath::Clamp(CurrentTrajectoryIndex, 0, TrajectoryRef->Positions.Num() - 1);
+			
+			// Find look-ahead waypoint for smoother path following
+			TargetWaypointIndex = CurrentTrajectoryIndex;
+			float AccumulatedDistance = 0.0f;
+			
+			for (int32 i = CurrentTrajectoryIndex; i < TrajectoryRef->Positions.Num() - 1; ++i)
+			{
+				float SegmentLength = FVector::Dist(TrajectoryRef->Positions[i], TrajectoryRef->Positions[i + 1]);
+				AccumulatedDistance += SegmentLength;
+				
+				if (AccumulatedDistance >= LookAheadDistance)
+				{
+					TargetWaypointIndex = i + 1;
+					break;
+				}
+				
+				// If we reach the end, use the last point
+				if (i == TrajectoryRef->Positions.Num() - 2)
+				{
+					TargetWaypointIndex = TrajectoryRef->Positions.Num() - 1;
+					break;
+				}
+			}
+			
+			// Check if we reached the current waypoint
+			FVector ToCurrentWaypoint = TrajectoryRef->Positions[CurrentTrajectoryIndex] - CurrentPos;
+			float DistanceToCurrentWaypoint = ToCurrentWaypoint.Size();
+			
+			if (DistanceToCurrentWaypoint < AcceptRadius)
+			{
+				if (CurrentTrajectoryIndex < TrajectoryRef->Positions.Num() - 1)
+				{
+					CurrentTrajectoryIndex++;
+					UE_LOG(LogTemp, Log, TEXT("GNSS Physics Replay: Reached waypoint %d/%d"), 
+						CurrentTrajectoryIndex + 1, TrajectoryRef->Positions.Num());
+				}
+				else
+				{
+					// Reached end of trajectory - loop back
+					UE_LOG(LogTemp, Warning, TEXT("GNSS Physics Replay: Finished trajectory, looping back"));
+					ResetGNSSReplay();
+					return;
+				}
+			}
+			
+			// ===== STEERING CONTROL (PID on heading) =====
+			FVector TargetPos = TrajectoryRef->Positions[TargetWaypointIndex];
+			FVector DeltaToTarget = TargetPos - CurrentPos;
+			
+			// Calculate desired heading towards target
+			float DesiredYaw = DeltaToTarget.Rotation().Yaw;
+			float CurrentYaw = CurrentRot.Yaw;
+			float YawError = FMath::FindDeltaAngleDegrees(CurrentYaw, DesiredYaw);
+			
+			// PID controller for steering
+			IntegralErrorYaw += YawError * Delta;
+			IntegralErrorYaw = FMath::Clamp(IntegralErrorYaw, -100.0f, 100.0f); // Anti-windup
+			
+			float DerivativeYaw = (YawError - PreviousErrorYaw) / FMath::Max(Delta, 0.001f);
+			PreviousErrorYaw = YawError;
+			
+			float SteeringCommand = (KpYaw * YawError) + (KiYaw * IntegralErrorYaw) + (KdYaw * DerivativeYaw);
+			SteeringCommand = FMath::Clamp(SteeringCommand, -1.0f, 1.0f);
+			
+			// Apply steering rate limit for smoother control
+			float SteeringDelta = SteeringCommand - SmoothedSteeringInput;
+			float MaxDelta = MaxSteeringRate * Delta;
+			SteeringDelta = FMath::Clamp(SteeringDelta, -MaxDelta, MaxDelta);
+			SmoothedSteeringInput += SteeringDelta;
+			SmoothedSteeringInput = FMath::Clamp(SmoothedSteeringInput, -1.0f, 1.0f);
+			
+			// ===== SPEED CONTROL (PID on velocity) =====
+			// Get target speed from GNSS data (always in km/h, calculated from positions/timestamps)
+			if (TrajectoryRef->Speeds.IsValidIndex(TargetWaypointIndex) && TrajectoryRef->Speeds[TargetWaypointIndex] > 0.1f)
+			{
+				TargetSpeed = TrajectoryRef->Speeds[TargetWaypointIndex]; // Already in km/h
+			}
+			else
+			{
+				// Fallback: calculate speed based on distance and trajectory density
+				// Assume we want to reach waypoints at a reasonable pace
+				float DistanceToTarget = DeltaToTarget.Size() / 100.0f; // Convert to meters
+				TargetSpeed = FMath::Clamp(DistanceToTarget * 2.0f, 5.0f, 50.0f); // 5-50 km/h
+			}
+			
+			float SpeedError = TargetSpeed - CurrentSpeed;
+			
+			// PID controller for speed
+			IntegralErrorSpeed += SpeedError * Delta;
+			IntegralErrorSpeed = FMath::Clamp(IntegralErrorSpeed, -50.0f, 50.0f); // Anti-windup
+			
+			float DerivativeSpeed = (SpeedError - PreviousErrorSpeed) / FMath::Max(Delta, 0.001f);
+			PreviousErrorSpeed = SpeedError;
+			
+			float SpeedCommand = (KpSpeed * SpeedError) + (KiSpeed * IntegralErrorSpeed) + (KdSpeed * DerivativeSpeed);
+			
+			// Split into throttle and brake
+			float ThrottleInput = 0.0f;
+			float BrakeInput = 0.0f;
+			
+			if (SpeedCommand > 0.0f)
+			{
+				// Need to accelerate
+				ThrottleInput = FMath::Clamp(SpeedCommand, 0.0f, 1.0f);
+				BrakeInput = 0.0f;
+			}
+			else
+			{
+				// Need to slow down
+				ThrottleInput = 0.0f;
+				BrakeInput = FMath::Clamp(-SpeedCommand * 0.5f, 0.0f, 1.0f);
+			}
+			
+			// Additional braking if we're going too fast for a sharp turn
+			if (FMath::Abs(YawError) > 45.0f && CurrentSpeed > 20.0f)
+			{
+				BrakeInput = FMath::Max(BrakeInput, 0.3f);
+				ThrottleInput = 0.0f;
+			}
+			
+			// Apply inputs to the Chaos vehicle physics system
+			ChaosVehicleMovement->SetSteeringInput(SmoothedSteeringInput);
+			ChaosVehicleMovement->SetThrottleInput(ThrottleInput);
+			ChaosVehicleMovement->SetBrakeInput(BrakeInput);
+			
+			// Debug logging (throttled to avoid spam)
+			static float DebugTimer = 0.0f;
+			DebugTimer += Delta;
+			if (DebugTimer >= 1.0f)
+			{
+				UE_LOG(LogTemp, Log, TEXT("GNSS Physics: WP=%d/%d, Speed=%.1f/%.1f km/h, YawErr=%.1f°, Steer=%.2f, Throttle=%.2f, Brake=%.2f"), 
+					CurrentTrajectoryIndex + 1, TrajectoryRef->Positions.Num(),
+					CurrentSpeed, TargetSpeed, YawError, SmoothedSteeringInput, ThrottleInput, BrakeInput);
+				DebugTimer = 0.0f;
+			}
+		}
+		else if (bUseTimestampPlayback && TrajectoryRef->Timestamps.Num() > 0)
+		{
+			// ===== LEGACY: TIMESTAMP-BASED TELEPORTATION MODE =====
 			CurrentSimTime += Delta * PlaybackSpeed;
 			
-			// Get trajectory start time
 			double StartTime = TrajectoryRef->Timestamps[0];
 			double CurrentTrajectoryTime = StartTime + CurrentSimTime;
 			
-			// Find the current segment based on timestamp
 			bool bFoundSegment = false;
 			for (int32 i = 0; i < TrajectoryRef->Timestamps.Num() - 1; ++i)
 			{
 				if (TrajectoryRef->Timestamps[i] <= CurrentTrajectoryTime && 
 					TrajectoryRef->Timestamps[i + 1] > CurrentTrajectoryTime)
 				{
-					// Interpolate between points based on timestamp
 					double t0 = TrajectoryRef->Timestamps[i];
 					double t1 = TrajectoryRef->Timestamps[i + 1];
 					float Alpha = (CurrentTrajectoryTime - t0) / (t1 - t0);
@@ -151,7 +297,6 @@ void ArcsimPawn::Tick(float Delta)
 					FVector TargetPos = FMath::Lerp(TrajectoryRef->Positions[i], TrajectoryRef->Positions[i + 1], Alpha);
 					FRotator TargetRot = FMath::Lerp(TrajectoryRef->Rotations[i], TrajectoryRef->Rotations[i + 1], Alpha);
 					
-					// Teleport with physics reset
 					SetActorLocationAndRotation(TargetPos, TargetRot, false, nullptr, ETeleportType::TeleportPhysics);
 					
 					if (GetMesh())
@@ -166,58 +311,15 @@ void ArcsimPawn::Tick(float Delta)
 				}
 			}
 			
-			// If we've passed the last timestamp, loop back
 			if (!bFoundSegment && CurrentTrajectoryTime >= TrajectoryRef->Timestamps.Last())
 			{
 				UE_LOG(LogTemp, Warning, TEXT("GNSS Replay: Finished trajectory (%.2fs), looping back to start"), CurrentSimTime);
 				ResetGNSSReplay();
 			}
 		}
-		else if (bUsePhysicsMovement)
-		{
-			// ===== PHYSICS-BASED MOVEMENT (PID Controller) =====
-			// Clamp index
-			CurrentTrajectoryIndex = FMath::Clamp(CurrentTrajectoryIndex, 0, TrajectoryRef->Positions.Num() - 1);
-			
-			FVector TargetPos = TrajectoryRef->Positions[CurrentTrajectoryIndex];
-			FVector CurrentPos = GetActorLocation();
-			FVector Delta3D = TargetPos - CurrentPos;
-			float Distance = Delta3D.Size();
-			
-			// Check if we reached the current waypoint
-			if (Distance < AcceptRadius)
-			{
-				if (CurrentTrajectoryIndex < TrajectoryRef->Positions.Num() - 1)
-				{
-					CurrentTrajectoryIndex++;
-					UE_LOG(LogTemp, Log, TEXT("GNSS Replay: Reached waypoint, moving to point %d/%d"), 
-						CurrentTrajectoryIndex + 1, TrajectoryRef->Positions.Num());
-				}
-				else
-				{
-					// Loop back to start
-					UE_LOG(LogTemp, Warning, TEXT("GNSS Replay: Finished trajectory, looping back"));
-					CurrentTrajectoryIndex = 0;
-				}
-			}
-			
-			// Calculate desired heading towards target
-			float DesiredYaw = Delta3D.Rotation().Yaw;
-			float CurrentYaw = GetActorRotation().Yaw;
-			float YawError = FMath::FindDeltaAngleDegrees(CurrentYaw, DesiredYaw);
-			
-			// PID controllers (simple P for now)
-			float SteeringInput = FMath::Clamp(KpYaw * YawError, -1.0f, 1.0f);
-			float ThrottleInput = FMath::Clamp(KpPosition * Distance, 0.0f, 1.0f);
-			
-			// Apply inputs to vehicle
-			ChaosVehicleMovement->SetSteeringInput(SteeringInput);
-			ChaosVehicleMovement->SetThrottleInput(ThrottleInput);
-			ChaosVehicleMovement->SetBrakeInput(0.0f);
-		}
 		else
 		{
-			// ===== FIXED DELAY TELEPORTATION MODE =====
+			// ===== LEGACY: FIXED DELAY TELEPORTATION MODE =====
 			TrajectoryTimer += Delta;
 			
 			if (TrajectoryTimer >= TrajectoryPointDelay)
@@ -226,14 +328,11 @@ void ArcsimPawn::Tick(float Delta)
 				
 				if (CurrentTrajectoryIndex < TrajectoryRef->Positions.Num())
 				{
-					// Teleport to next GNSS point with proper physics handling
 					FVector TargetPos = TrajectoryRef->Positions[CurrentTrajectoryIndex];
 					FRotator TargetRot = TrajectoryRef->Rotations[CurrentTrajectoryIndex];
 					
-					// Use TeleportPhysics flag to avoid the warning and reset physics state
 					SetActorLocationAndRotation(TargetPos, TargetRot, false, nullptr, ETeleportType::TeleportPhysics);
 					
-					// Reset physics velocities to avoid residual movement
 					if (GetMesh())
 					{
 						GetMesh()->SetPhysicsLinearVelocity(FVector::ZeroVector);
@@ -417,8 +516,24 @@ void ArcsimPawn::DoResetVehicle()
 void ArcsimPawn::ResetGNSSReplay()
 {
 	CurrentTrajectoryIndex = 0;
+	TargetWaypointIndex = 0;
 	CurrentSimTime = 0.0f;
 	TrajectoryTimer = 0.0f;
+	
+	// Reset PID controller state
+	IntegralErrorYaw = 0.0f;
+	PreviousErrorYaw = 0.0f;
+	IntegralErrorSpeed = 0.0f;
+	PreviousErrorSpeed = 0.0f;
+	SmoothedSteeringInput = 0.0f;
+	
+	// Reset vehicle inputs
+	if (ChaosVehicleMovement)
+	{
+		ChaosVehicleMovement->SetSteeringInput(0.0f);
+		ChaosVehicleMovement->SetThrottleInput(0.0f);
+		ChaosVehicleMovement->SetBrakeInput(0.0f);
+	}
 	
 	if (TrajectoryRef && TrajectoryRef->Positions.Num() > 0)
 	{
@@ -437,7 +552,8 @@ void ArcsimPawn::ResetGNSSReplay()
 			GetMesh()->SetPhysicsAngularVelocityInDegrees(FVector::ZeroVector);
 		}
 		
-		UE_LOG(LogTemp, Warning, TEXT("GNSS Replay: Reset to start position"));
+		UE_LOG(LogTemp, Warning, TEXT("GNSS Replay: Reset to start position (Physics Mode: %s)"), 
+			bUsePhysicsMovement ? TEXT("Enabled") : TEXT("Disabled"));
 	}
 }
 
