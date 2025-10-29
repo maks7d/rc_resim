@@ -48,7 +48,7 @@ void UGNSSLoaderWidget::CreateWidgets()
 	}
 
 	UTextBlock* ButtonLabel = NewObject<UTextBlock>(this, UTextBlock::StaticClass());
-	ButtonLabel->SetText(FText::FromString(TEXT("?? Import GNSS File")));
+	ButtonLabel->SetText(FText::FromString(TEXT("Import GNSS File")));
 	BtnImportGNSS->AddChild(ButtonLabel);
 
 	FileNameText = NewObject<UTextBlock>(this, UTextBlock::StaticClass(), TEXT("FileNameText"));
@@ -138,14 +138,14 @@ void UGNSSLoaderWidget::OnImportButtonClicked()
 				{
 					FString FileName = FPaths::GetCleanFilename(FilePath);
 					int32 NumPoints = TrajectoryActorRef->Positions.Num();
-					FString StatusText = FString::Printf(TEXT("? Loaded: %s (%d points)"), *FileName, NumPoints);
+					FString StatusText = FString::Printf(TEXT("Loaded: %s (%d points)"), *FileName, NumPoints);
 					FileNameText->SetText(FText::FromString(StatusText));
 					FileNameText->SetColorAndOpacity(FSlateColor(FLinearColor::Green));
 					UE_LOG(LogTemp, Warning, TEXT("GNSSLoaderWidget: GNSS data loaded successfully! %d points (new file)"), NumPoints);
 				}
 				else
 				{
-					FileNameText->SetText(FText::FromString(TEXT("? Failed to load file - Check format")));
+					FileNameText->SetText(FText::FromString(TEXT("Failed to load file - Check format")));
 					FileNameText->SetColorAndOpacity(FSlateColor(FLinearColor::Red));
 					UE_LOG(LogTemp, Error, TEXT("GNSSLoaderWidget: Failed to load GNSS data from file (new file)"));
 				}
@@ -155,7 +155,7 @@ void UGNSSLoaderWidget::OnImportButtonClicked()
 		{
 			if (FileNameText)
 			{
-				FileNameText->SetText(FText::FromString(TEXT("? Error: No TrajectoryActor found")));
+				FileNameText->SetText(FText::FromString(TEXT("Error: No TrajectoryActor found")));
 				FileNameText->SetColorAndOpacity(FSlateColor(FLinearColor::Red));
 			}
 			UE_LOG(LogTemp, Error, TEXT("GNSSLoaderWidget: TrajectoryActorRef is null - cannot load GNSS data (new file)"));
